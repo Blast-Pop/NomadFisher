@@ -1,318 +1,244 @@
-﻿import React, { useState, useEffect, useRef } from 'react';
+﻿// App.js
+import React, { useState, useEffect, useRef } from 'react';
 import {
-    StyleSheet, View, Alert, Modal, Text,
-    TextInput, Button, TouchableOpacity,
+  StyleSheet, View, Alert, Text, TouchableOpacity,
+  ActivityIndicator, Modal, TextInput, Image, Button
 } from 'react-native';
 import MapView, { Marker, UrlTile } from 'react-native-maps';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 import { MaterialIcons } from '@expo/vector-icons';
-import { supabase } from './lib/supabaseClient'; // ⚠️ Assure-toi que ce fichier existe
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as WebBrowser from 'expo-web-browser';
+import * as AuthSession from 'expo-auth-session';
+import { supabase } from './lib/supabaseClient';
+
+WebBrowser.maybeCompleteAuthSession();
 
 export default function App() {
-    const [privateSpots, setPrivateSpots] = useState([]);
-    const [publicSpots, setPublicSpots] = useState([]);
-    const [region, setRegion] = useState({
-        latitude: 46.8139,
-        longitude: -71.208,
-        latitudeDelta: 1,
-        longitudeDelta: 1,
-    });
-    const [location, setLocation] = useState(null);
-    const [heading, setHeading] = useState(0);
-    const lastHeading = useRef(0);
+  const [email, setEmail] = useState(null);
+  const [privateSpots, setPrivateSpots] = useState([]);
+  const [publicSpots, setPublicSpots] = useState([]);
+  const [region, setRegion] = useState({
+    latitude: 46.8139,
+    longitude: -71.208,
+    latitudeDelta: 0.05,
+    longitudeDelta: 0.05,
+  });
+  const [location, setLocation] = useState(null);
+  const [heading, setHeading] = useState(0);
+  const lastHeading = useRef(0);
+  const [isLoading, setIsLoading] = useState(true);
 
-    const [modalVisible, setModalVisible] = useState(false);
-    const [newSpotCoords, setNewSpotCoords] = useState(null);
-    const [spotName, setSpotName] = useState('');
-    const [spotDescription, setSpotDescription] = useState('');
-    const [spotIsPublic, setSpotIsPublic] = useState(false);
+  const [modalVisible, setModalVisible] = useState(false);
+  const [newSpotCoords, setNewSpotCoords] = useState(null);
+  const [spotName, setSpotName] = useState('');
+  const [spotDescription, setSpotDescription] = useState('');
+  const [spotIsPublic, setSpotIsPublic] = useState(false);
 
-    useEffect(() => {
-        (async () => {
-            const { data, error } = await supabase.from('public_spots').select('*');
-            if (error) console.error('Erreur chargement Supabase:', error.message);
-            else setPublicSpots(data || []);
-        })();
+  useEffect(() => {
+    (async () => {
+      const { data, error } = await supabase.from('public_spots').select('*');
+      if (!error) setPublicSpots(data || []);
+    })();
 
-        (async () => {
-            const stored = await AsyncStorage.getItem('private_spots');
-            if (stored) setPrivateSpots(JSON.parse(stored));
-        })();
-    }, []);
+    (async () => {
+      const stored = await AsyncStorage.getItem('private_spots');
+      if (stored) setPrivateSpots(JSON.parse(stored));
+    })();
 
-    useEffect(() => {
-        (async () => {
-            const { status } = await Location.requestForegroundPermissionsAsync();
-            if (status !== 'granted') {
-                Alert.alert('Permission refusée', 'La localisation est nécessaire.');
-                return;
-            }
+    (async () => {
+      const storedEmail = await AsyncStorage.getItem('user_email');
+      if (storedEmail) {
+        const { data, error } = await supabase
+          .from('users')
+          .select('*')
+          .eq('email', storedEmail)
+          .single();
 
-            const loc = await Location.getCurrentPositionAsync({});
-            setLocation(loc.coords);
-            setRegion({
-                latitude: loc.coords.latitude,
-                longitude: loc.coords.longitude,
-                latitudeDelta: 0.05,
-                longitudeDelta: 0.05,
-            });
-
-            Location.watchPositionAsync(
-                { accuracy: Location.Accuracy.High, distanceInterval: 1 },
-                (loc) => {
-                    setLocation(loc.coords);
-                    setRegion((r) => ({
-                        ...r,
-                        latitude: loc.coords.latitude,
-                        longitude: loc.coords.longitude,
-                    }));
-                }
-            );
-
-            Location.watchHeadingAsync((headingObj) => {
-                const newHeading = headingObj.trueHeading;
-                let diff = newHeading - lastHeading.current;
-                if (diff > 180) diff -= 360;
-                if (diff < -180) diff += 360;
-                const smoothed = lastHeading.current + diff * 0.2;
-                const normalized = (smoothed + 360) % 360;
-                lastHeading.current = normalized;
-                setHeading(normalized);
-            });
-        })();
-    }, []);
-
-    const handleMapPress = (event) => {
-        const { coordinate } = event.nativeEvent;
-        setNewSpotCoords(coordinate);
-        setSpotName('');
-        setSpotDescription('');
-        setSpotIsPublic(false);
-        setModalVisible(true);
-    };
-
-    const saveNewSpot = async () => {
-        if (!newSpotCoords) return;
-
-        const spot = {
-            name: spotName.trim() || (spotIsPublic ? 'Spot public' : 'Spot privé'),
-            description: spotDescription.trim(),
-            latitude: newSpotCoords.latitude,
-            longitude: newSpotCoords.longitude,
-        };
-
-        try {
-            if (spotIsPublic) {
-                const { error } = await supabase.from('public_spots').insert([
-                    {
-                        name: spot.name,
-                        description: spot.description,
-                        latitude: spot.latitude,
-                        longitude: spot.longitude,
-                        type: 'pêche',
-                    }
-                ]);
-                if (error) throw error;
-                const { data } = await supabase.from('public_spots').select('*');
-                setPublicSpots(data);
-            } else {
-                const updatedPrivate = [...privateSpots, spot];
-                setPrivateSpots(updatedPrivate);
-                await AsyncStorage.setItem('private_spots', JSON.stringify(updatedPrivate));
-            }
-            setModalVisible(false);
-        } catch (e) {
-            console.error('Erreur ajout spot', e);
-            Alert.alert('Erreur', 'Impossible d\'ajouter le spot.');
+        if (!error && data) {
+          setEmail(storedEmail);
+        } else {
+          await AsyncStorage.removeItem('user_email');
         }
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission refusée', 'La localisation est nécessaire.');
+        return;
+      }
+
+      const loc = await Location.getCurrentPositionAsync({});
+      setLocation(loc.coords);
+      setRegion({
+        latitude: loc.coords.latitude,
+        longitude: loc.coords.longitude,
+        latitudeDelta: 0.05,
+        longitudeDelta: 0.05,
+      });
+
+      Location.watchPositionAsync(
+        { accuracy: Location.Accuracy.High, distanceInterval: 1 },
+        (loc) => setLocation(loc.coords)
+      );
+
+      Location.watchHeadingAsync((headingObj) => {
+        const newHeading = headingObj.trueHeading;
+        let diff = newHeading - lastHeading.current;
+        if (diff > 180) diff -= 360;
+        if (diff < -180) diff += 360;
+        const smoothed = lastHeading.current + diff * 0.2;
+        const normalized = (smoothed + 360) % 360;
+        lastHeading.current = normalized;
+        setHeading(normalized);
+      });
+
+      setIsLoading(false);
+    })();
+  }, []);
+
+  const handleLogin = async () => {
+    const redirectUri = AuthSession.makeRedirectUri({ useProxy: true });
+    const { data, error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: redirectUri }
+    });
+
+    if (error) return Alert.alert('Erreur de login', error.message);
+
+    const result = await WebBrowser.openAuthSessionAsync(data.url, redirectUri);
+    if (result.type === 'success' && result.url.includes('access_token')) {
+      const sessionRes = await supabase.auth.getSession();
+      const userEmail = sessionRes.data.session?.user?.email;
+      if (userEmail) {
+        await AsyncStorage.setItem('user_email', userEmail);
+        await supabase.from('users').upsert({ email: userEmail });
+        setEmail(userEmail);
+      }
+    }
+  };
+
+  const saveNewSpot = async () => {
+    if (!newSpotCoords) return;
+
+    const spot = {
+      name: spotName.trim() || (spotIsPublic ? 'Spot public' : 'Spot privé'),
+      description: spotDescription.trim(),
+      latitude: newSpotCoords.latitude,
+      longitude: newSpotCoords.longitude,
     };
 
-    const [editModalVisible, setEditModalVisible] = useState(false);
-    const [selectedSpotIndex, setSelectedSpotIndex] = useState(null);
-    const [editedName, setEditedName] = useState('');
-    const [editedDescription, setEditedDescription] = useState('');
-
-    const openEditModal = (index) => {
-        setSelectedSpotIndex(index);
-        setEditedName(privateSpots[index].name);
-        setEditedDescription(privateSpots[index].description || '');
-        setEditModalVisible(true);
-    };
-
-    const saveSpotChanges = async () => {
-        if (selectedSpotIndex === null) return;
-        const updated = [...privateSpots];
-        updated[selectedSpotIndex] = {
-            ...updated[selectedSpotIndex],
-            name: editedName,
-            description: editedDescription,
-        };
+    try {
+      if (spotIsPublic) {
+        if (!email) {
+          Alert.alert('Connexion requise', 'Veuillez vous connecter.');
+          return;
+        }
+        const { error } = await supabase.from('public_spots').insert([{ ...spot, email }]);
+        if (error) throw error;
+        const { data } = await supabase.from('public_spots').select('*');
+        setPublicSpots(data);
+      } else {
+        const updated = [...privateSpots, spot];
         setPrivateSpots(updated);
         await AsyncStorage.setItem('private_spots', JSON.stringify(updated));
-        setEditModalVisible(false);
-    };
+      }
+      setModalVisible(false);
+    } catch (e) {
+      Alert.alert('Erreur', "Impossible d'ajouter le spot.");
+    }
+  };
 
-    const deleteSpot = async () => {
-        if (selectedSpotIndex === null) return;
-        const updated = privateSpots.filter((_, i) => i !== selectedSpotIndex);
-        setPrivateSpots(updated);
-        await AsyncStorage.setItem('private_spots', JSON.stringify(updated));
-        setEditModalVisible(false);
-    };
-
+  if (isLoading) {
     return (
-        <View style={styles.container}>
-            <MapView
-                style={styles.map}
-                region={region}
-                onRegionChangeComplete={setRegion}
-                onPress={handleMapPress}
-            >
-                <UrlTile urlTemplate="https://a.tile.openstreetmap.org/{z}/{x}/{y}.png" maximumZ={19} />
-
-                {location && (
-                    <Marker
-                        coordinate={{ latitude: location.latitude, longitude: location.longitude }}
-                        anchor={{ x: 0.5, y: 0.5 }}
-                        flat={true}
-                        rotation={heading}
-                    >
-                        <View style={styles.userMarker}>
-                            <View style={styles.outerCircle}>
-                                <MaterialIcons name="navigation" size={24} color="white" />
-                            </View>
-                        </View>
-                    </Marker>
-                )}
-
-                {privateSpots.map((spot, i) => (
-                    <Marker
-                        key={'private-' + i}
-                        coordinate={{ latitude: spot.latitude, longitude: spot.longitude }}
-                        title={spot.name}
-                        description={spot.description || ''}
-                        pinColor="red"
-                        onPress={() => openEditModal(i)}
-                    />
-                ))}
-
-                {publicSpots.map((spot, i) => (
-                    <Marker
-                        key={'public-' + i}
-                        coordinate={{ latitude: spot.latitude, longitude: spot.longitude }}
-                        title={spot.name}
-                        description={spot.description || ''}
-                        pinColor="green"
-                    />
-                ))}
-            </MapView>
-
-            {/* Modal ajout */}
-            <Modal visible={modalVisible} animationType="slide" transparent>
-                <View style={styles.modalContainer}>
-                    <View style={styles.modalContent}>
-                        <Text style={styles.modalTitle}>Nouveau spot</Text>
-                        <TextInput style={styles.input} placeholder="Nom" value={spotName} onChangeText={setSpotName} />
-                        <TextInput style={[styles.input, { height: 80 }]} placeholder="Description" multiline value={spotDescription} onChangeText={setSpotDescription} />
-                        <View style={{ flexDirection: 'row', marginBottom: 15, alignItems: 'center' }}>
-                            <Text style={{ flex: 1 }}>Rendre public ?</Text>
-                            <TouchableOpacity style={[styles.toggleButton, spotIsPublic ? styles.toggleActive : null]} onPress={() => setSpotIsPublic(true)}>
-                                <Text style={spotIsPublic ? styles.toggleTextActive : styles.toggleText}>Oui</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity style={[styles.toggleButton, !spotIsPublic ? styles.toggleActive : null]} onPress={() => setSpotIsPublic(false)}>
-                                <Text style={!spotIsPublic ? styles.toggleTextActive : styles.toggleText}>Non</Text>
-                            </TouchableOpacity>
-                        </View>
-                        <View style={styles.modalButtons}>
-                            <Button title="Annuler" onPress={() => setModalVisible(false)} />
-                            <Button title="Ajouter" onPress={saveNewSpot} />
-                        </View>
-                    </View>
-                </View>
-            </Modal>
-
-            {/* Modal édition */}
-            <Modal visible={editModalVisible} animationType="slide" transparent>
-                <View style={styles.modalContainer}>
-                    <View style={styles.modalContent}>
-                        <Text style={styles.modalTitle}>Modifier spot privé</Text>
-                        <TextInput style={styles.input} placeholder="Nom" value={editedName} onChangeText={setEditedName} />
-                        <TextInput style={[styles.input, { height: 80 }]} placeholder="Description" multiline value={editedDescription} onChangeText={setEditedDescription} />
-                        <View style={styles.modalButtons}>
-                            <Button title="Annuler" onPress={() => setEditModalVisible(false)} />
-                            <Button title="Enregistrer" onPress={saveSpotChanges} />
-                            <Button title="Supprimer" color="red" onPress={deleteSpot} />
-                        </View>
-                    </View>
-                </View>
-            </Modal>
-        </View>
+      <View style={styles.loaderContainer}>
+        <Image source={require('./assets/logo.png')} style={styles.logo} />
+        <ActivityIndicator size="large" color="#3b82f6" />
+        <Text style={{ marginTop: 10 }}>Chargement...</Text>
+      </View>
     );
+  }
+
+  return (
+    <View style={styles.container}>
+      <MapView style={styles.map} region={region} onPress={e => setNewSpotCoords(e.nativeEvent.coordinate)}>
+        <UrlTile urlTemplate="https://a.tile.openstreetmap.org/{z}/{x}/{y}.png" maximumZ={19} />
+        {location && (
+          <Marker coordinate={location} anchor={{ x: 0.5, y: 0.5 }} flat rotation={heading}>
+            <View style={styles.userMarker}>
+              <View style={styles.outerCircle}>
+                <MaterialIcons name="navigation" size={24} color="white" />
+              </View>
+            </View>
+          </Marker>
+        )}
+        {privateSpots.map((s, i) => <Marker key={`p-${i}`} coordinate={s} title={s.name} description={s.description} pinColor="red" />)}
+        {publicSpots.map((s, i) => <Marker key={`pub-${i}`} coordinate={s} title={s.name} description={s.description} pinColor="green" />)}
+      </MapView>
+
+      {!email && (
+        <TouchableOpacity style={styles.loginButton} onPress={handleLogin}>
+          <Text style={styles.loginText}>Login</Text>
+        </TouchableOpacity>
+      )}
+
+      <Modal visible={modalVisible} animationType="slide" transparent>
+        <View style={styles.modalContainer}>
+          <View style={styles.modalContent}>
+            <Text>Nom du spot</Text>
+            <TextInput value={spotName} onChangeText={setSpotName} style={styles.input} />
+            <Text>Description</Text>
+            <TextInput value={spotDescription} onChangeText={setSpotDescription} style={styles.input} />
+            <TouchableOpacity onPress={() => setSpotIsPublic(!spotIsPublic)} style={styles.checkbox}>
+              <MaterialIcons name={spotIsPublic ? 'check-box' : 'check-box-outline-blank'} size={24} />
+              <Text> Spot Public</Text>
+            </TouchableOpacity>
+            <Button title="Enregistrer" onPress={saveNewSpot} />
+            <Button title="Annuler" onPress={() => setModalVisible(false)} />
+          </View>
+        </View>
+      </Modal>
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({
-    container: { flex: 1 },
-    map: { flex: 1 },
-    userMarker: {
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    outerCircle: {
-        backgroundColor: '#3b82f6',
-        borderRadius: 20,
-        width: 40,
-        height: 40,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    modalContainer: {
-        flex: 1,
-        backgroundColor: 'rgba(0,0,0,0.5)',
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    modalContent: {
-        backgroundColor: 'white',
-        padding: 20,
-        borderRadius: 10,
-        width: '80%',
-    },
-    modalTitle: {
-        fontSize: 18,
-        fontWeight: 'bold',
-        marginBottom: 10,
-    },
-    input: {
-        borderWidth: 1,
-        borderColor: '#ccc',
-        borderRadius: 5,
-        padding: 10,
-        marginBottom: 10,
-    },
-    modalButtons: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        gap: 10,
-    },
-    toggleButton: {
-        paddingHorizontal: 12,
-        paddingVertical: 6,
-        borderWidth: 1,
-        borderColor: '#888',
-        borderRadius: 5,
-        marginHorizontal: 5,
-    },
-    toggleActive: {
-        backgroundColor: '#3b82f6',
-        borderColor: '#3b82f6',
-    },
-    toggleText: {
-        color: '#888',
-        fontWeight: 'bold',
-    },
-    toggleTextActive: {
-        color: 'white',
-        fontWeight: 'bold',
-    },
+  container: { flex: 1 },
+  map: { flex: 1 },
+  loaderContainer: {
+    flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'white',
+  },
+  logo: {
+    width: 320, height: 320, resizeMode: 'contain', marginBottom: 20,
+  },
+  userMarker: {
+    alignItems: 'center', justifyContent: 'center',
+  },
+  outerCircle: {
+    backgroundColor: '#3b82f6', borderRadius: 20, width: 40, height: 40,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  loginButton: {
+    position: 'absolute', top: 40, right: 20, backgroundColor: '#3b82f6',
+    paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, zIndex: 200,
+  },
+  loginText: {
+    color: 'white', fontWeight: 'bold',
+  },
+  modalContainer: {
+    flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.4)',
+  },
+  modalContent: {
+    backgroundColor: 'white', padding: 20, borderRadius: 8, width: '80%',
+  },
+  input: {
+    borderBottomWidth: 1, borderColor: '#ccc', marginBottom: 10,
+  },
+  checkbox: {
+    flexDirection: 'row', alignItems: 'center', marginBottom: 10,
+  },
 });
